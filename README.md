@@ -3,7 +3,7 @@
 A Python pygame implementation of the classic arcade game Breakout. Built with an Object-Oriented approach, this version features dynamic ball physics, scaling difficulty, and vibrant procedural brick layouts.
 
 # Getting started
-## Prerewuisites
+## Prerequisites
 - Python 3.8+
 - Pygame CE (or standard Pygame)
 
