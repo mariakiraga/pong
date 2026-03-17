@@ -168,40 +168,75 @@ class ServerGameState:
     def trigger_dilemma(self, player_id):
         self.dilemma_active = True
         self.dilemma_player = player_id
-        self.dilemma_time = 2.0
+        self.dilemma_time = 2.0  # Dokładnie 2 sekundy na decyzję
         
-        # Losujemy rodzaj scenariusza
+        # Losujemy kategorię modyfikacji
+        self.effect_type = random.choice(["PADDLE", "BALL", "SCORE"])
+        
+        # BUFF - Ułatwienia (Wybierasz dla siebie = grasz samolubnie/konkurencyjnie)
+        # NERF - Utrudnienia (Wybierasz dla siebie = bierzesz ciężar na siebie/kooperujesz)
         if random.random() < 0.5:
             self.dilemma_scenario = "BUFF"
-            self.dilemma_texts = (
-                "[1] Małe ułatwienie dla Ciebie (Konkurencja)",
-                "[2] Duże ułatwienie dla rywala (Kooperacja)"
-            )
+            if self.effect_type == "PADDLE":
+                self.dilemma_texts = ("[1] Paletka +20 (Dla mnie)", "[2] Paletka +60 (Dla rywala)")
+            elif self.effect_type == "BALL":
+                self.dilemma_texts = ("[1] Piłka wolniej (Dla mnie)", "[2] Piłka b. wolno (Dla rywala)")
+            else:
+                self.dilemma_texts = ("[1] +2 Punkty (Dla mnie)", "[2] +5 Punktów (Dla rywala)")
         else:
             self.dilemma_scenario = "NERF"
-            self.dilemma_texts = (
-                "[1] Małe utrudnienie dla Ciebie (Kooperacja)",
-                "[2] Duże utrudnienie dla rywala (Konkurencja)"
-            )
+            if self.effect_type == "PADDLE":
+                self.dilemma_texts = ("[1] Paletka -20 (Dla mnie)", "[2] Paletka -60 (Dla rywala)")
+            elif self.effect_type == "BALL":
+                self.dilemma_texts = ("[1] Piłka szybciej (Dla mnie)", "[2] Piłka b. szybko (Dla rywala)")
+            else:
+                self.dilemma_texts = ("[1] -2 Punkty (Dla mnie)", "[2] -5 Punktów (Dla rywala)")
 
     def apply_dilemma_choice(self, player_id, choice):
         other_id = 1 if player_id == 0 else 0
-        
-        # Przykładowe efekty - modyfikujemy szerokość paletki
-        if self.dilemma_scenario == "BUFF":
-            if choice == "1":
-                self.games[player_id].paddle.width += 20 # Słaby buff dla siebie
-            elif choice == "2":
-                self.games[other_id].paddle.width += 60  # Silny buff dla drugiego
-        elif self.dilemma_scenario == "NERF":
-            if choice == "1":
-                self.games[player_id].paddle.width = max(50, self.games[player_id].paddle.width - 20) # Słaby nerf dla siebie
-            elif choice == "2":
-                self.games[other_id].paddle.width = max(50, self.games[other_id].paddle.width - 60) # Silny nerf dla drugiego
+        p_game = self.games[player_id]
+        o_game = self.games[other_id]
 
-        # Zaktualizuj fizyczne wymiary paletek po nałożeniu efektów
-        self.games[0].paddle.rect.width = self.games[0].paddle.width
-        self.games[1].paddle.rect.width = self.games[1].paddle.width
+        if self.dilemma_scenario == "BUFF":
+            target = p_game if choice == "1" else o_game
+            power = "SMALL" if choice == "1" else "BIG"
+            
+            if self.effect_type == "PADDLE":
+                target.paddle.width += 20 if power == "SMALL" else 60
+            elif self.effect_type == "BALL":
+                target.ball.speed = max(150, target.ball.speed - (50 if power == "SMALL" else 150))
+            elif self.effect_type == "SCORE":
+                target.score += 2 if power == "SMALL" else 5
+
+        elif self.dilemma_scenario == "NERF":
+            target = p_game if choice == "1" else o_game
+            power = "SMALL" if choice == "1" else "BIG"
+            
+            if self.effect_type == "PADDLE":
+                target.paddle.width = max(40, target.paddle.width - (20 if power == "SMALL" else 60))
+            elif self.effect_type == "BALL":
+                target.ball.speed = min(BALL_MAX_SPEED, target.ball.speed + (80 if power == "SMALL" else 200))
+            elif self.effect_type == "SCORE":
+                target.score = max(0, target.score - (2 if power == "SMALL" else 5))
+
+        # Zaktualizuj fizyczne wymiary prostokątów kolizji obu graczy
+        p_game.paddle.rect.width = p_game.paddle.width
+        o_game.paddle.rect.width = o_game.paddle.width
+        self.dilemma_active = False
+
+    def apply_penalty(self, player_id):
+        # KARA ZA BRAK DECYZJI: Zawsze trafia w gracza, który nie wybrał. Zawsze jest bolesna.
+        game = self.games[player_id]
+        penalty_type = random.choice(["PADDLE", "BALL", "SCORE"])
+        
+        if penalty_type == "PADDLE":
+            game.paddle.width = max(30, game.paddle.width - 70) # Mikroskopijna paletka
+        elif penalty_type == "BALL":
+            game.ball.speed = min(BALL_MAX_SPEED, game.ball.speed + 250) # Błyskawiczna piłka
+        elif penalty_type == "SCORE":
+            game.score = max(0, game.score - 10) # Duża strata punktów
+            
+        game.paddle.rect.width = game.paddle.width
         self.dilemma_active = False
 
     def update_physics(self, dt):
@@ -212,25 +247,19 @@ class ServerGameState:
             self.dilemma_time -= dt
             chooser_game = self.games[self.dilemma_player]
             
-            # Sprawdź, czy gracz coś kliknął (klawisz "1" lub "2")
             if chooser_game.current_action in ["1", "2"]:
                 self.apply_dilemma_choice(self.dilemma_player, chooser_game.current_action)
                 chooser_game.current_action = "NONE"
-            # Sprawdź, czy minął czas (kara!)
             elif self.dilemma_time <= 0:
-                print(f"Gracz {self.dilemma_player} zaspał! Nakładam karę.")
-                # Sroga kara za brak wyboru - zmniejszenie paletki
-                chooser_game.paddle.width = max(40, chooser_game.paddle.width - 50)
-                chooser_game.paddle.rect.width = chooser_game.paddle.width
-                self.dilemma_active = False
-            
-            return # Przerwij funkcję - fizyka NIE JEST aktualizowana podczas wyboru!
+                print(f"Gracz {self.dilemma_player} zaspał! Nakładam losową karę.")
+                self.apply_penalty(self.dilemma_player)
+                
+            return # Zatrzymujemy fizykę (pauza)
 
-        # --- NORMALNA AKTUALIZACJA FIZYKI ---
+        # Reszta aktualizacji fizyki bez zmian...
         self.games[0].update(dt)
         self.games[1].update(dt)
 
-        # Sprawdzanie czy ktoś złapał skrzynkę
         if self.games[0].sabotage_to_send == "MYSTERY_BOX":
             self.trigger_dilemma(0)
             self.games[0].sabotage_to_send = None
@@ -238,7 +267,6 @@ class ServerGameState:
             self.trigger_dilemma(1)
             self.games[1].sabotage_to_send = None
 
-        # Sprawdzanie warunków wygranej / przegranej w rundzie
         if self.games[0].ball.pos.y > HEIGHT or self.games[1].ball.pos.y > HEIGHT or \
            self.games[0].bricks.remaining() == 0 or self.games[1].bricks.remaining() == 0:
             self.round += 1

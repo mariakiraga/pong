@@ -39,12 +39,20 @@ def main():
                 run = False
 
         # --- ZBIERANIE KLAWISZY ---
+        # --- ZBIERANIE KLAWISZY ---
         keys = pygame.key.get_pressed()
         action = "NONE"
-        if keys[pygame.K_LEFT]: action = "LEFT"
-        elif keys[pygame.K_RIGHT]: action = "RIGHT"
-        elif keys[pygame.K_1]: action = "1"  # Dodano obsługę klawisza 1
-        elif keys[pygame.K_2]: action = "2"  # Dodano obsługę klawisza 2
+        
+        # Priorytet mają klawisze wyboru (1 i 2)
+        if keys[pygame.K_1] or keys[pygame.K_KP1]: 
+            action = "1"
+        elif keys[pygame.K_2] or keys[pygame.K_KP2]: 
+            action = "2"
+        # Jeśli nie wciskamy cyfr, sprawdzamy strzałki
+        elif keys[pygame.K_LEFT]: 
+            action = "LEFT"
+        elif keys[pygame.K_RIGHT]: 
+            action = "RIGHT"
 
         # Komunikacja z serwerem
         state = n.send(action)
