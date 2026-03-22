@@ -1,5 +1,5 @@
-# This file contains definitions of elements to be rendered onto a gaming surface on a Client's device
-# as well as main physics and logic of the game.
+# server.py — Breakout multiplayer server
+
 import socket
 import threading
 import pickle
@@ -9,18 +9,17 @@ import math
 import sys
 import struct
 
-# Base config of the game physics
-WIDTH, HEIGHT = 1280, 720  # set the same as in client
+# ================== BASE CONFIG ==================
+WIDTH, HEIGHT = 1280, 720
 BALL_START_SPEED = 450
 BALL_SPEED_INCREMENT = 20
 BALL_MAX_SPEED = 900
 
-# ==========================================
-# Test mode for debugging etc.
-TEST_MODE = True
-# ==========================================
+TEST_MODE = False # for code testing set to True
 
-# ================== HELPER FUNCTIONS ==================
+DEFAULT_NICKNAMES = ["Gracz 1", "Gracz 2"]
+
+# ================== HELPERS ==================
 def send_msg(sock, msg):
     msg = struct.pack('>I', len(msg)) + msg
     sock.sendall(msg)
@@ -42,7 +41,6 @@ def recv_msg(sock):
     return recvall(sock, msglen)
 
 # ================== OBJECT CLASSES ==================
-# draw onto surface implementation in client
 class BallLogic:
     def __init__(self):
         self.radius = 14
@@ -53,7 +51,9 @@ class BallLogic:
 
     @property
     def rect(self):
-        return pygame.Rect(self.pos.x - self.radius, self.pos.y - self.radius, self.radius * 2, self.radius * 2)
+        return pygame.Rect(
+            self.pos.x - self.radius, self.pos.y - self.radius,
+            self.radius * 2, self.radius * 2)
 
     def reset(self):
         self.pos = pygame.Vector2(WIDTH // 2, HEIGHT // 2)
@@ -73,15 +73,18 @@ class BallLogic:
     def reflect_from_paddle(self, paddle_rect):
         offset = (self.pos.x - paddle_rect.centerx) / (paddle_rect.width / 2)
         angle = offset * 60
-        self.direction = pygame.Vector2(math.sin(math.radians(angle)), -abs(math.cos(math.radians(angle)))).normalize()
+        self.direction = pygame.Vector2(
+            math.sin(math.radians(angle)),
+            -abs(math.cos(math.radians(angle)))).normalize()
 
 
 class PaddleLogic:
     def __init__(self):
-        self.width = 120 
+        self.width = 120
         self.height = 20
         self.speed = 750
-        self.rect = pygame.Rect((WIDTH - self.width) // 2, HEIGHT - 60, self.width, self.height)
+        self.rect = pygame.Rect((WIDTH - self.width) // 2, HEIGHT - 60,
+                                 self.width, self.height)
 
     def update(self, dt, action):
         if action == "LEFT":
@@ -92,15 +95,14 @@ class PaddleLogic:
 
 
 class BrickFieldLogic:
-    '''Class for handling the logic behind all bricks present in the game alltoghether'''
     def __init__(self):
         self.bricks = []
         self.create()
 
     def create(self):
         self.bricks.clear()
-        rows, cols = random.randint(5, 8), random.randint(10, 11)
-        # width, height, padding, offset_top = 90, 30, 10, 60
+        rows = random.randint(5, 8)
+        cols = random.randint(10, 11)
         width, height, padding, offset_top = 100, 35, 15, 80
         offset_left = (WIDTH - (width + padding) * cols) // 2
 
@@ -108,12 +110,15 @@ class BrickFieldLogic:
             for col in range(cols):
                 x = col * (width + padding) + offset_left
                 y = row * (height + padding) + offset_top
-                
                 color_obj = pygame.Color(0)
                 color_obj.hsva = (row * 30, 80, 100, 100)
-                rgb_color = (color_obj.r, color_obj.g, color_obj.b)
-                
-                self.bricks.append({"rect": pygame.Rect(x, y, width, height), "color": rgb_color, "alive": True})
+                rgb = (color_obj.r, color_obj.g, color_obj.b)
+                self.bricks.append({
+                    "rect": pygame.Rect(x, y, width, height),
+                    "color": rgb,
+                    "alive": True,
+                    "row": row,       # sent to client for row-based coloring
+                })
 
     def remaining(self):
         return sum(1 for b in self.bricks if b["alive"])
@@ -127,8 +132,8 @@ class PlayerGame:
         self.bricks = BrickFieldLogic()
         self.score = 0
         self.current_action = "NONE"
-        self.falling_powerups = [] 
-        self.sabotage_to_send = None 
+        self.falling_powerups = []
+        self.sabotage_to_send = None
 
     def update(self, dt):
         self.paddle.update(dt, self.current_action)
@@ -143,16 +148,17 @@ class PlayerGame:
                 self.ball.direction.y *= -1
                 self.score += 1
                 self.ball.increase_speed()
-                
-                if random.random() < 0.10: 
+                if random.random() < 0.10:
                     self.falling_powerups.append({
-                        "rect": pygame.Rect(brick["rect"].centerx - 10, brick["rect"].bottom, 20, 20),
+                        "rect": pygame.Rect(
+                            brick["rect"].centerx - 10,
+                            brick["rect"].bottom, 20, 20),
                         "type": "MYSTERY_BOX"
                     })
                 break
-        
+
         for pu in self.falling_powerups[:]:
-            pu["rect"].y += 150 * dt 
+            pu["rect"].y += 150 * dt
             if pu["rect"].colliderect(self.paddle.rect):
                 self.sabotage_to_send = pu["type"]
                 self.score += 1
@@ -161,71 +167,96 @@ class PlayerGame:
                 self.falling_powerups.remove(pu)
 
 
+# ================== SERVER GAME STATE ==================
 class ServerGameState:
-    def __init__(self):
+    def __init__(self, nicknames=None):
         self.round = 1
         self.max_rounds = 5
         self.games = {0: PlayerGame(0), 1: PlayerGame(1)}
         self.state_msg = "WAITING FOR PLAYERS"
         self.playing = False
         self.game_over = False
-        
-        # Pause and stats settings
+
         self.intermission = False
-        # self.intermission_time = 0.0 # prev version with timer for intermission
-        self.players_ready = {0: False, 1: False} # button state for finishing intermission
+        self.players_ready = {0: False, 1: False}
         self.stats = {
             0: {"buff_self": 0, "buff_other": 0, "nerf_self": 0, "nerf_other": 0},
-            1: {"buff_self": 0, "buff_other": 0, "nerf_self": 0, "nerf_other": 0}
+            1: {"buff_self": 0, "buff_other": 0, "nerf_self": 0, "nerf_other": 0},
         }
 
         self.dilemma_active = False
-        self.dilemma_player = None 
+        self.dilemma_player = None
         self.dilemma_time = 0.0
-        self.dilemma_scenario = "" 
-        self.dilemma_texts = ("", "") 
+        self.dilemma_scenario = ""
+        self.dilemma_texts = ("", "")
 
+        # Nicknames: list of 2 strings, index = player_id
+        self.nicknames = nicknames if nicknames else list(DEFAULT_NICKNAMES)
+
+    # ---- Nicknames ----
+    def set_nickname(self, player_id, name):
+        """Sanitise and store a nickname for player_id."""
+        name = name.strip()[:20] or DEFAULT_NICKNAMES[player_id]
+        self.nicknames[player_id] = name
+        print(f"Gracz {player_id} ustawił nick: '{name}'")
+
+    # ---- Round management ----
     def start_round(self):
         for p_id in [0, 1]:
             self.games[p_id].ball.reset()
             self.games[p_id].bricks.create()
             self.games[p_id].falling_powerups.clear()
             self.games[p_id].sabotage_to_send = None
-            self.games[p_id].paddle.width = 130 
+            self.games[p_id].paddle.width = 130
         self.playing = True
         self.dilemma_active = False
         self.state_msg = f"ROUND {self.round}"
 
+    # ---- Dilemma ----
     def trigger_dilemma(self, player_id):
         self.dilemma_active = True
         self.dilemma_player = player_id
-        self.dilemma_time = 2.0 
-        
+        self.dilemma_time = 2.0
         self.effect_type = random.choice(["PADDLE", "BALL", "SCORE"])
-        
+
+        # Use actual nicknames in the dilemma text
+        my_nick  = self.nicknames[player_id]
+        opp_nick = self.nicknames[1 - player_id]
+
         if random.random() < 0.5:
             self.dilemma_scenario = "BUFF"
             if self.effect_type == "PADDLE":
-                self.dilemma_texts = ("[1] Paletka +20 (Dla mnie)", "[2] Paletka +60 (Dla drugiego gracza)") # upsize the paddle
+                self.dilemma_texts = (
+                    f"[1] Paletka +20 ({my_nick})",
+                    f"[2] Paletka +60 ({opp_nick})")
             elif self.effect_type == "BALL":
-                self.dilemma_texts = ("[1] Piłka wolniej (Dla mnie)", "[2] Piłka b. wolno (Dla drugiego gracza)") # slow down the ball
+                self.dilemma_texts = (
+                    f"[1] Piłka wolniej ({my_nick})",
+                    f"[2] Piłka b. wolno ({opp_nick})")
             else:
-                self.dilemma_texts = ("[1] +2 Punkty (Dla mnie)", "[2] +5 Punktów (Dla drugiego gracza)") # additional points
+                self.dilemma_texts = (
+                    f"[1] +2 Punkty ({my_nick})",
+                    f"[2] +5 Punktów ({opp_nick})")
         else:
             self.dilemma_scenario = "NERF"
             if self.effect_type == "PADDLE":
-                self.dilemma_texts = ("[1] Paletka -20 (Dla mnie)", "[2] Paletka -60 (Dla drugiego gracza)") # downsize the paddle
+                self.dilemma_texts = (
+                    f"[1] Paletka -20 ({my_nick})",
+                    f"[2] Paletka -60 ({opp_nick})")
             elif self.effect_type == "BALL":
-                self.dilemma_texts = ("[1] Piłka szybciej (Dla mnie)", "[2] Piłka b. szybko (Dla drugiego gracza)") # speed up the ball
+                self.dilemma_texts = (
+                    f"[1] Piłka szybciej ({my_nick})",
+                    f"[2] Piłka b. szybko ({opp_nick})")
             else:
-                self.dilemma_texts = ("[1] -2 Punkty (Dla mnie)", "[2] -5 Punktów (Dla drugiego gracza)") # subtract points
+                self.dilemma_texts = (
+                    f"[1] -2 Punkty ({my_nick})",
+                    f"[2] -5 Punktów ({opp_nick})")
 
     def apply_dilemma_choice(self, player_id, choice):
-        other_id = 1 if player_id == 0 else 0
+        other_id = 1 - player_id
         p_game = self.games[player_id]
         o_game = self.games[other_id]
 
-        # keep track for intermission stats
         if self.dilemma_scenario == "BUFF":
             if choice == "1":
                 self.stats[player_id]["buff_self"] += 1
@@ -237,11 +268,9 @@ class ServerGameState:
             elif choice == "2":
                 self.stats[player_id]["nerf_other"] += 1
 
-        # Apply buff/nerf choice
         if self.dilemma_scenario == "BUFF":
             target = p_game if choice == "1" else o_game
             power = "SMALL" if choice == "1" else "BIG"
-            
             if self.effect_type == "PADDLE":
                 target.paddle.width += 20 if power == "SMALL" else 60
             elif self.effect_type == "BALL":
@@ -252,7 +281,6 @@ class ServerGameState:
         elif self.dilemma_scenario == "NERF":
             target = p_game if choice == "1" else o_game
             power = "SMALL" if choice == "1" else "BIG"
-            
             if self.effect_type == "PADDLE":
                 target.paddle.width = max(40, target.paddle.width - (20 if power == "SMALL" else 60))
             elif self.effect_type == "BALL":
@@ -264,57 +292,42 @@ class ServerGameState:
         o_game.paddle.rect.width = o_game.paddle.width
         self.dilemma_active = False
 
-    # penalty for player for not making a choice in the dilemma
     def apply_penalty(self, player_id):
         game = self.games[player_id]
         penalty_type = random.choice(["PADDLE", "BALL", "SCORE"])
-        
         if penalty_type == "PADDLE":
-            game.paddle.width = max(30, game.paddle.width - 70) 
+            game.paddle.width = max(30, game.paddle.width - 70)
         elif penalty_type == "BALL":
-            game.ball.speed = min(BALL_MAX_SPEED, game.ball.speed + 250) 
+            game.ball.speed = min(BALL_MAX_SPEED, game.ball.speed + 250)
         elif penalty_type == "SCORE":
-            game.score = max(0, game.score - 10) 
-            
+            game.score = max(0, game.score - 10)
         game.paddle.rect.width = game.paddle.width
         self.dilemma_active = False
 
+    # ---- Physics tick ----
     def update_physics(self, dt):
-        if not self.playing: return
+        if not self.playing:
+            return
 
-        # intermission handling -- prev version with timer
-        # if self.intermission:
-        #     self.intermission_time -= dt
-        #     if self.intermission_time <= 0:
-        #         self.intermission = False
-        #         self.start_round()
-        #     return
-
-        # intermission handling
         if self.intermission:
-            # New round starts when both players declare readiness
-            required_ready = 1 if TEST_MODE else 2 # for test mode only 1 declaration required
+            required_ready = 1 if TEST_MODE else 2
             ready_count = sum(1 for p_id in self.players_ready if self.players_ready[p_id])
-            
             if ready_count >= required_ready:
                 self.intermission = False
-                self.players_ready = {0: False, 1: False} # Resetujemy gotowość na kolejną rundę
+                self.players_ready = {0: False, 1: False}
                 self.start_round()
             return
 
-        # dilemma handling
         if self.dilemma_active:
             self.dilemma_time -= dt
             chooser_game = self.games[self.dilemma_player]
-            
             if chooser_game.current_action in ["1", "2"]:
                 self.apply_dilemma_choice(self.dilemma_player, chooser_game.current_action)
                 chooser_game.current_action = "NONE"
             elif self.dilemma_time <= 0:
                 print(f"Gracz {self.dilemma_player} zaspał! Nakładam karę.")
                 self.apply_penalty(self.dilemma_player)
-                
-            return 
+            return
 
         self.games[0].update(dt)
         self.games[1].update(dt)
@@ -326,10 +339,8 @@ class ServerGameState:
             self.trigger_dilemma(1)
             self.games[1].sabotage_to_send = None
 
-        # round finish condition
-        if self.games[0].ball.pos.y > HEIGHT or self.games[1].ball.pos.y > HEIGHT or \
-           self.games[0].bricks.remaining() == 0 or self.games[1].bricks.remaining() == 0:
-            
+        if (self.games[0].ball.pos.y > HEIGHT or self.games[1].ball.pos.y > HEIGHT or
+                self.games[0].bricks.remaining() == 0 or self.games[1].bricks.remaining() == 0):
             self.round += 1
             if self.round > self.max_rounds:
                 self.playing = False
@@ -338,149 +349,185 @@ class ServerGameState:
                 self.print_stats_to_console()
             else:
                 self.intermission = True
-                # self.intermission_time = 5.0 # 7 sekund pauzy
                 self.players_ready = {0: False, 1: False}
                 self.print_stats_to_console()
 
+    # ---- State snapshot for client ----
     def get_state_for_player(self, player_id):
-        my_game = self.games[player_id]
-        other_game = self.games[1 if player_id == 0 else 0]
-        
+        my_game  = self.games[player_id]
+        opp_game = self.games[1 - player_id]
         return {
-            "round": self.round,
-            "msg": self.state_msg,
-            "my_score": my_game.score,
-            "opponent_score": other_game.score,
-            "shared_score": my_game.score + other_game.score,
-            "ball_pos": (my_game.ball.pos.x, my_game.ball.pos.y),
-            "ball_radius": my_game.ball.radius,
-            "paddle_rect": my_game.paddle.rect,
-            "bricks": my_game.bricks.bricks,
-            "powerups": my_game.falling_powerups,
-            "playing": self.playing,
-            "game_over": self.game_over,
-            "dilemma_active": self.dilemma_active,
-            "dilemma_player": self.dilemma_player,
-            "dilemma_time": self.dilemma_time,
-            "dilemma_texts": self.dilemma_texts,
-            "intermission": self.intermission,
-            #"intermission_time": self.intermission_time,
-            "my_ready": self.players_ready[player_id],
-            "stats": self.stats
+            "round":            self.round,
+            "msg":              self.state_msg,
+            "my_score":         my_game.score,
+            "opponent_score":   opp_game.score,
+            "shared_score":     my_game.score + opp_game.score,
+            "ball_pos":         (my_game.ball.pos.x, my_game.ball.pos.y),
+            "ball_radius":      my_game.ball.radius,
+            "paddle_rect":      my_game.paddle.rect,
+            "bricks":           my_game.bricks.bricks,
+            "powerups":         my_game.falling_powerups,
+            "playing":          self.playing,
+            "game_over":        self.game_over,
+            "dilemma_active":   self.dilemma_active,
+            "dilemma_player":   self.dilemma_player,
+            "dilemma_time":     self.dilemma_time,
+            "dilemma_texts":    self.dilemma_texts,
+            "intermission":     self.intermission,
+            "my_ready":         self.players_ready[player_id],
+            "stats":            self.stats,
+            # Nicknames — client uses these for all labels
+            "my_nick":          self.nicknames[player_id],
+            "opp_nick":         self.nicknames[1 - player_id],
+            "nicknames":        list(self.nicknames),  # full list, useful for game-over screen
         }
-    
+
     def print_stats_to_console(self):
         runda_nr = self.round - 1 if not self.game_over else self.max_rounds
         print(f"\n{'='*10} STATYSTYKI PO RUNDZIE {runda_nr} {'='*10}")
         for p_id in [0, 1]:
             s = self.stats[p_id]
-            my_game = self.games[p_id]
-            other_game = self.games[1 if p_id == 0 else 1 - p_id]
-            print(f"--- GRACZ {p_id} ---")
-            print(f"Ułatwienie dla siebie : {s['buff_self']}")
-            print(f"Ułatwienie dla drugiego gracza : {s['buff_other']}")
-            print(f"Utrudnienie dla siebie: {s['nerf_self']}")
-            print(f"Utrudnienie dla drugiego gracza: {s['nerf_other']}")
-            print(f"Twój wynik: {my_game.score}")
-            print(f"Wynik drugiego gracza: {other_game.score}")
-            print(f"Wspólny wynik: {my_game.score+other_game.score}")
-        print("==========================================\n")
+            my_game  = self.games[p_id]
+            opp_game = self.games[1 - p_id]
+            nick = self.nicknames[p_id]
+            print(f"--- {nick} (Gracz {p_id}) ---")
+            print(f"  Ułatwienie dla siebie:          {s['buff_self']}")
+            print(f"  Ułatwienie dla drugiego gracza: {s['buff_other']}")
+            print(f"  Utrudnienie dla siebie:         {s['nerf_self']}")
+            print(f"  Utrudnienie dla drugiego gracza:{s['nerf_other']}")
+            print(f"  Wynik: {my_game.score}  |  Rywal: {opp_game.score}  |  Wspólny: {my_game.score + opp_game.score}")
+        print("=" * 42 + "\n")
 
 
-# ================== NETWORKING LOOP ==================
-server = "0.0.0.0" 
+# ================== NETWORKING ==================
+server_addr = "0.0.0.0"
 port = 5555
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind((server, port))
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((server_addr, port))
 s.listen(2)
 s.settimeout(1.0)
 
 game_state = ServerGameState()
 connected_players = 0
+state_lock = threading.Lock()
+
 
 def handle_client(conn, player_id):
+    """
+    Handshake protocol (before game loop):
+      1. Server sends player_id  (pickle int)
+      2. Client sends nickname   (pickle str, e.g. "NICK:Kowalski")
+      3. Server sends ACK        (pickle "OK")
+    Then normal action/state loop begins.
+    """
     global connected_players, game_state
-    
+
+    # Step 1 — send player id
     send_msg(conn, pickle.dumps(player_id))
-    
+
+    # Step 2 — receive nickname
+    try:
+        raw = recv_msg(conn)
+        if raw:
+            payload = pickle.loads(raw)
+            if isinstance(payload, str) and payload.startswith("NICK:"):
+                nick = payload[5:]
+                with state_lock:
+                    game_state.set_nickname(player_id, nick)
+            # Step 3 — ACK
+            send_msg(conn, pickle.dumps("OK"))
+    except Exception as e:
+        print(f"Błąd podczas handshake gracza {player_id}: {e}")
+
+    # Main game loop
     while True:
         try:
             raw_data = recv_msg(conn)
-            if not raw_data: 
+            if not raw_data:
                 break
-                
+
             action = pickle.loads(raw_data)
-            
-            # Hard reset
-            if action == "RESTART" and game_state.game_over:
-                print(f"Gracz {player_id} zrestartował serwer!")
-                game_state = ServerGameState()
-            elif action == "READY" and game_state.intermission:
-                game_state.players_ready[player_id] = True
-            else:
-                game_state.games[player_id].current_action = action
-            
-            state_data = game_state.get_state_for_player(player_id)
+
+            with state_lock:
+                if action == "RESTART" and game_state.game_over:
+                    # Preserve nicknames across restart
+                    old_nicks = list(game_state.nicknames)
+                    game_state = ServerGameState(nicknames=old_nicks)
+                    print(f"Gracz {player_id} zrestartował serwer!")
+                elif action == "READY" and game_state.intermission:
+                    game_state.players_ready[player_id] = True
+                else:
+                    game_state.games[player_id].current_action = action
+
+                state_data = game_state.get_state_for_player(player_id)
+
             send_msg(conn, pickle.dumps(state_data))
+
         except Exception as e:
             print(f"Błąd u Gracza {player_id}: {e}")
             break
 
-    print(f"Utracono połączenie z Graczem {player_id}")
-    connected_players -= 1
-    
-    # Hard reset when one player quits the game
-    game_state = ServerGameState()
+    print(f"Utracono połączenie z Graczem {player_id} ({game_state.nicknames[player_id]})")
+    with state_lock:
+        connected_players -= 1
+        old_nicks = list(game_state.nicknames)
+        game_state = ServerGameState(nicknames=old_nicks)
     conn.close()
+
 
 def physics_loop():
     clock = pygame.time.Clock()
     while True:
         dt = clock.tick(60) / 1000.0
-        
         required_players = 1 if TEST_MODE else 2
-        
-        if connected_players >= required_players and not game_state.playing and not game_state.game_over:
-            game_state.start_round()
 
-        # intermission handling
-        if game_state.playing and game_state.intermission:
-            ready_count = sum(1 for p_id in game_state.players_ready if game_state.players_ready[p_id])
-            
-            if ready_count >= required_players:
-                game_state.intermission = False
-                game_state.players_ready = {0: False, 1: False}
+        with state_lock:
+            if (connected_players >= required_players
+                    and not game_state.playing
+                    and not game_state.game_over):
                 game_state.start_round()
-            continue
-            
-        if TEST_MODE and game_state.playing and connected_players == 1:
-            p2 = game_state.games[1]
-            if p2.paddle.rect.centerx < p2.ball.pos.x - 15:
-                p2.current_action = "RIGHT"
-            elif p2.paddle.rect.centerx > p2.ball.pos.x + 15:
-                p2.current_action = "LEFT"
-            else:
-                p2.current_action = "NONE"
-                
-        game_state.update_physics(dt)
+
+            if game_state.playing and game_state.intermission:
+                ready_count = sum(
+                    1 for p_id in game_state.players_ready
+                    if game_state.players_ready[p_id])
+                if ready_count >= required_players:
+                    game_state.intermission = False
+                    game_state.players_ready = {0: False, 1: False}
+                    game_state.start_round()
+                continue
+
+            # AI paddle for test mode (player 2)
+            if TEST_MODE and game_state.playing and connected_players == 1:
+                p2 = game_state.games[1]
+                if p2.paddle.rect.centerx < p2.ball.pos.x - 15:
+                    p2.current_action = "RIGHT"
+                elif p2.paddle.rect.centerx > p2.ball.pos.x + 15:
+                    p2.current_action = "LEFT"
+                else:
+                    p2.current_action = "NONE"
+
+            game_state.update_physics(dt)
+
 
 threading.Thread(target=physics_loop, daemon=True).start()
-
 print("Serwer wystartował. Oczekiwanie na graczy...")
 
 try:
     while True:
         try:
             conn, addr = s.accept()
-            print("Połączono z:", addr)
-            p_id = connected_players
-            connected_players += 1
-            threading.Thread(target=handle_client, args=(conn, p_id), daemon=True).start()
+            with state_lock:
+                p_id = connected_players
+                connected_players += 1
+            print(f"Połączono z: {addr}  →  Gracz {p_id}")
+            threading.Thread(
+                target=handle_client, args=(conn, p_id), daemon=True).start()
         except socket.timeout:
-            pass 
-            
+            pass
 except KeyboardInterrupt:
-    print("\n[!] Wykryto Ctrl+C. Zamykanie serwera...")
+    print("\n[!] Zamykanie serwera...")
     s.close()
     sys.exit()

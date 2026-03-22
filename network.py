@@ -1,60 +1,80 @@
+# network.py
 import socket
 import pickle
 import struct
 
+
+def _send_msg(sock, msg):
+    msg = struct.pack('>I', len(msg)) + msg
+    sock.sendall(msg)
+
+
+def _recvall(sock, n):
+    data = bytearray()
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None
+        data.extend(packet)
+    return data
+
+
+def _recv_msg(sock):
+    raw_len = _recvall(sock, 4)
+    if not raw_len:
+        return None
+    msglen = struct.unpack('>I', raw_len)[0]
+    return _recvall(sock, msglen)
+
+
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server = 
+        self.server = "127.0.0.1" # change for your server's IPv4
         self.port = 5555
-        self.addr = (self.server, self.port)
-        self.p = self.connect()
+        self.player_id = None
+        self._connect()
+
+    def _connect(self):
+        try:
+            self.client.connect((self.server, self.port))
+            # Step 1: receive player_id from server
+            raw = _recv_msg(self.client)
+            self.player_id = pickle.loads(raw)
+        except Exception as e:
+            print(f"Błąd połączenia: {e}")
+            self.player_id = None
 
     def getP(self):
-        return self.p
+        return self.player_id
 
-    def send_msg(self, sock, msg):
-        # Pakuje długość wiadomości (4 bajty) i dokleja do niej właściwe dane
-        msg = struct.pack('>I', len(msg)) + msg
-        sock.sendall(msg)
-
-    def recvall(self, sock, n):
-        # Helper: odbiera dokładnie n bajtów
-        data = bytearray()
-        while len(data) < n:
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None
-            data.extend(packet)
-        return data
-
-    def recv_msg(self, sock):
-        # Czyta 4 bajty nagłówka z długością paczki
-        raw_msglen = self.recvall(sock, 4)
-        if not raw_msglen:
-            return None
-        msglen = struct.unpack('>I', raw_msglen)[0]
-        # Następnie czyta dokładnie tyle bajtów, ile zadeklarowano w nagłówku
-        return self.recvall(sock, msglen)
-
-    def connect(self):
+    def send_nick(self, nick: str):
+        """
+        Step 2 of handshake: send nickname, wait for "OK".
+        The "OK" response is consumed here so it never leaks into the game loop.
+        """
         try:
-            self.client.connect(self.addr)
-            # Odbiera numer gracza po nowemu
-            raw_data = self.recv_msg(self.client)
-            return pickle.loads(raw_data)
-        except socket.error as e:
-            print("Błąd połączenia z serwerem:", e)
+            _send_msg(self.client, pickle.dumps(f"NICK:{nick}"))
+            raw = _recv_msg(self.client)
+            ack = pickle.loads(raw) if raw else None
+            if ack != "OK":
+                print(f"Ostrzeżenie: nieoczekiwana odpowiedź serwera: {ack!r}")
+        except Exception as e:
+            print(f"Błąd wysyłania nicku: {e}")
 
     def send(self, data):
+        """Send action string, receive game state dict."""
         try:
-            # Wysyła wciśnięte klawisze
-            self.send_msg(self.client, pickle.dumps(data))
-            # Czeka na cały kompletny stan gry
-            raw_data = self.recv_msg(self.client)
-            if raw_data:
-                return pickle.loads(raw_data)
-            return None
-        except socket.error as e:
-            print(e)
+            _send_msg(self.client, pickle.dumps(data))
+            raw = _recv_msg(self.client)
+            if raw is None:
+                return None
+            result = pickle.loads(raw)
+            # Safety net: if server accidentally sends a non-dict, discard it
+            if not isinstance(result, dict):
+                print(f"Nieoczekiwany typ odpowiedzi serwera: {type(result)} — pomijam")
+                return None
+            return result
+        except Exception as e:
+            print(f"Błąd send(): {e}")
             return None
