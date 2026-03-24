@@ -4,7 +4,7 @@ A two-player networked implementation of the classic arcade game **Breakout**, b
 
 ## Research Context
 
-The game explores a variant of the **Prisoner's Dilemma** applied to real-time gameplay. Players are not told whether the game is cooperative or competitive — that ambiguity is intentional. Each time a power-up is collected, the player must choose between helping themselves or their opponent, at different costs and benefits. After each round, both players see a breakdown of each other's decisions. The hypothesis is that this feedback triggers an emotional response and causes players to adapt (or entrench) their strategy in the next round.
+The game explores a variant of the **Prisoner's Dilemma** applied to real-time gameplay. Players are not told whether the game is cooperative or competitive — that ambiguity is intentional. Each time a power-up is collected, the player must choose between helping themselves or their opponent, at different costs and benefits. After each round, both players see a breakdown of each other's decisions. The assumption is that this feedback triggers an emotional response and causes players to adapt (or entrench) their strategy in the next round.
 
 ---
 
