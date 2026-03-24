@@ -286,8 +286,6 @@ def draw_dilemma(surface, state, player_id):
             ts = font_sm.render(text, True, c)
             surface.blit(ts, (rect.centerx - ts.get_width() // 2,
                                rect.centery - ts.get_height() // 2))
-            key = font_sm.render(f"[{i + 1}]", True, c)
-            surface.blit(key, (rect.x + 10, rect.y - 30))
     else:
         opp_nick = state.get("opp_nick", "Rywal")
         wait = font_md.render(f"{opp_nick} podejmuje decyzję...", True, WHITE_DIM)
